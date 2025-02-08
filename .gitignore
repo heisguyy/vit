@@ -1,3 +1,5 @@
 fonts/
-training.py
 vit_model.pth
+__pycache__/
+models/
+wandb/
