@@ -9,7 +9,9 @@ from torchvision import datasets, transforms
 from tqdm import tqdm
 
 import wandb
-from model import ViTForImageClassification, ViTConfig
+from model import ViTForImageClassification
+
+# pylint: disable=invalid-name
 
 # Initialize wandb for experiment tracking
 os.makedirs("models", exist_ok=True)
@@ -94,7 +96,7 @@ for epoch in range(EPOCHS):
 
     training_loss /= len(train_loader)
     training_accuracy = 100.0 * correct / total
-    
+
     model.eval()
     val_loss = 0
     correct = 0

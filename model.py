@@ -3,6 +3,7 @@ Author: Oluwatosin Olajide
 This is an implementation of the ViT. 
 """
 
+import math
 from dataclasses import dataclass
 
 # pylint: disable=not-callable
@@ -62,9 +63,12 @@ class ViTEmbeddings(nn.Module):
 
     def __init__(self, config: ViTConfig):
         super().__init__()
+        self.config = config
         self.patch_embeddings = ViTPatchEmbeddings(config)
         self.embedding_dimension = config.hidden_size
-        self.cls_token = nn.Parameter(torch.randn(1, 1, config.hidden_size)) #global token
+        self.cls_token = nn.Parameter(
+            torch.randn(1, 1, config.hidden_size)
+        )  # global token
 
         self.num_patches = (config.image_size // config.patch_size) ** 2
         self.position_embeddings = nn.Parameter(
@@ -74,12 +78,55 @@ class ViTEmbeddings(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass"""
+        _, _, height, width = x.shape
         patch_embeddings = self.patch_embeddings(x)
         global_token = self.cls_token.expand(patch_embeddings.shape[0], -1, -1)
         # add the global token
         patch_embeddings = torch.cat((global_token, patch_embeddings), dim=1)
-        embeddings = patch_embeddings + self.position_embeddings
+        if height > self.config.image_size or width > self.config.image_size:
+            position_embeddings = self.__interpolate_positional_embeddings(
+                height, width
+            )
+            embeddings = patch_embeddings + position_embeddings
+        else:
+            embeddings = patch_embeddings + self.position_embeddings
         return embeddings
+
+    def __interpolate_positional_embeddings(
+        self,
+        new_height: int,
+        new_width: int,
+    ) -> None:
+        """Interpolate positional embeddings to accommodate larger images"""
+        global_token_position_embedding = self.position_embeddings[:, 0, :]
+        old_position_embeddings = self.position_embeddings[:, 1:, :]
+        old_position_embeddings = einops.rearrange(
+            old_position_embeddings,
+            "batch (height width) channels -> batch channels height width",
+            height=int(math.sqrt(old_position_embeddings.shape[1])),
+            width=int(math.sqrt(old_position_embeddings.shape[1])),
+        ).contiguous()
+        new_height //= self.config.patch_size
+        new_width //= self.config.patch_size
+        new_position_embeddings = nn.functional.interpolate(
+            old_position_embeddings,
+            size=(new_height, new_width),
+            mode="bicubic",
+            align_corners=False,
+        )
+        new_position_embeddings = einops.rearrange(
+            new_position_embeddings,
+            "batch channels height width -> batch (height width) channels",
+        ).contiguous()
+        new_position_embeddings = torch.cat(
+            [
+                global_token_position_embedding.unsqueeze(0),
+                new_position_embeddings
+            ],
+            dim=1
+        )
+        return new_position_embeddings
+
 
 class ViTSelfOutput(nn.Module):
     """Output layer for the self-attention layer in the ViT model"""
@@ -94,7 +141,6 @@ class ViTSelfOutput(nn.Module):
         hidden_state = self.dense(hidden_state)
         hidden_state = self.dropout(hidden_state)
         return hidden_state
-
 
 
 class ViTSdpaSelfAttention(
@@ -140,7 +186,9 @@ class ViTSdpaSelfAttention(
             heads=self.num_attention_heads,
             head_dim=self.head_dim,
         ).contiguous()
-        attention = torch.matmul(multihead_query, multihead_key) * (self.head_dim**-0.5)
+        attention = torch.matmul(multihead_query, multihead_key) * (
+            self.head_dim**-0.5
+        )
 
         attention = nn.functional.softmax(
             attention, dim=-1, dtype=torch.float32
@@ -168,6 +216,7 @@ class ViTSdpaAttention(nn.Module):
         attention_output = self.attention(hidden_state)
         attention_output = self.output(attention_output)
         return attention_output
+
 
 class GELUActivation(nn.Module):
     """GELU activation function"""
@@ -272,7 +321,7 @@ class ViTModel(nn.Module):
         """Forward pass"""
         hidden_state = self.embeddings(x)
         hidden_state = self.encoder(hidden_state)
-        hidden_state = self.layernorm(hidden_state[:,0,:])
+        hidden_state = self.layernorm(hidden_state[:, 0, :])
         return hidden_state
 
 
@@ -289,3 +338,10 @@ class ViTForImageClassification(nn.Module):
         hidden_state = self.vit(x)
         logits = self.classifier(hidden_state)
         return logits
+
+
+if __name__ == "__main__":
+    sample_tensor = torch.randn(1, 3, 320, 384)
+    model = ViTForImageClassification(ViTConfig())
+    result = model(sample_tensor)
+    print(result.shape)
